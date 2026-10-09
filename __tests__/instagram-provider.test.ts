@@ -8,6 +8,7 @@ vi.mock("@/lib/meta/oauth", () => ({
 import {
   createInstagramContext,
   sendPrivateReplyWithButton,
+  sendDirectMessageWithButton,
   sendDirectMessageWithLinkButton,
   getRecentMediaComments,
   getUserFollowStatus,
@@ -72,6 +73,115 @@ describe("Instagram provider boundary", () => {
         { type: "postback", title: "Reveal", payload: "reveal:campaign" },
       ],
     });
+  });
+  it("prepends the profile link button in a Zernio follow-gate message", async () => {
+    respond({ messageId: "mid" });
+    await sendPrivateReplyWithButton({
+      context,
+      instagramAccountId: "ig",
+      commentId: "comment",
+      postId: "post",
+      text: "follow me",
+      buttonTitle: "I'm following",
+      payload: "followcheck:campaign",
+      profileButton: {
+        title: "Follow",
+        url: "https://www.instagram.com/neuroblagov/",
+      },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).buttons).toEqual([
+      {
+        type: "url",
+        title: "Follow",
+        url: "https://www.instagram.com/neuroblagov/",
+      },
+      {
+        type: "postback",
+        title: "I'm following",
+        payload: "followcheck:campaign",
+      },
+    ]);
+  });
+  it("prepends the profile link button in a Meta follow-gate private reply", async () => {
+    respond({ recipient_id: "r", message_id: "m" });
+    await sendPrivateReplyWithButton({
+      context: { provider: "META", accessToken: "token" },
+      instagramAccountId: "ig",
+      commentId: "comment",
+      text: "follow me",
+      buttonTitle: "I'm following",
+      payload: "followcheck:campaign",
+      profileButton: {
+        title: "Follow",
+        url: "https://www.instagram.com/neuroblagov/",
+      },
+    });
+    expect(
+      JSON.parse(fetchMock.mock.calls[0][1].body).message.attachment.payload
+        .buttons
+    ).toEqual([
+      {
+        type: "web_url",
+        url: "https://www.instagram.com/neuroblagov/",
+        title: "Follow",
+      },
+      {
+        type: "postback",
+        title: "I'm following",
+        payload: "followcheck:campaign",
+      },
+    ]);
+  });
+  it("prepends the profile link button in a Meta follow-gate direct message", async () => {
+    respond({ recipient_id: "r", message_id: "m" });
+    await sendDirectMessageWithButton({
+      context: { provider: "META", accessToken: "token" },
+      instagramAccountId: "ig",
+      userId: "recipient",
+      text: "follow me",
+      buttonTitle: "I'm following",
+      payload: "followcheck:campaign",
+      profileButton: {
+        title: "Follow",
+        url: "https://www.instagram.com/neuroblagov/",
+      },
+    });
+    expect(
+      JSON.parse(fetchMock.mock.calls[0][1].body).message.attachment.payload
+        .buttons
+    ).toEqual([
+      {
+        type: "web_url",
+        url: "https://www.instagram.com/neuroblagov/",
+        title: "Follow",
+      },
+      {
+        type: "postback",
+        title: "I'm following",
+        payload: "followcheck:campaign",
+      },
+    ]);
+  });
+  it("keeps a single postback button when no profile link is passed (Meta)", async () => {
+    respond({ recipient_id: "r", message_id: "m" });
+    await sendDirectMessageWithButton({
+      context: { provider: "META", accessToken: "token" },
+      instagramAccountId: "ig",
+      userId: "recipient",
+      text: "follow me",
+      buttonTitle: "I'm following",
+      payload: "followcheck:campaign",
+    });
+    expect(
+      JSON.parse(fetchMock.mock.calls[0][1].body).message.attachment.payload
+        .buttons
+    ).toEqual([
+      {
+        type: "postback",
+        title: "I'm following",
+        payload: "followcheck:campaign",
+      },
+    ]);
   });
   it("sends URL buttons to the recipient IGSID without another send", async () => {
     respond({ data: { messageId: "mid" } });

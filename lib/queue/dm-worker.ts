@@ -82,6 +82,30 @@ const FOLLOW_RECHECK_TOTAL_MS = FOLLOW_RECHECK_DELAYS_MS.reduce(
 );
 
 /**
+ * The optional profile link shown first in the two follow-gated messages
+ * (the opening DM and the follow prompt). Set FOLLOW_PROFILE_BUTTON_LABEL —
+ * e.g. "Подписаться" — to render a web_url button to the connected account's
+ * profile ahead of the postback button, so a non-follower can tap straight
+ * through to follow. Read at call time and only when the campaign gates on a
+ * follow; left unset, the upstream single-button behavior is unchanged.
+ */
+function getFollowProfileButton({
+  requireFollow,
+  username,
+}: {
+  requireFollow: boolean;
+  username?: string | null;
+}): { title: string; url: string } | undefined {
+  const label = process.env.FOLLOW_PROFILE_BUTTON_LABEL?.trim();
+  const handle = username?.trim();
+  if (!label || !handle || !requireFollow) return undefined;
+  return {
+    title: label.slice(0, 20),
+    url: `https://www.instagram.com/${handle}/`,
+  };
+}
+
+/**
  * Sends Meta answered with an error but may well have delivered anyway.
  *
  * Meta returns the generic code 1 OAuthException on /messages *after* the DM
@@ -679,6 +703,10 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           // own "I'm following" button, which sends the same prefix.
           payload: `${automation.requireFollow ? "followcheck" : "reveal"}:${automation.id}:open`,
           postId: mediaId,
+          profileButton: getFollowProfileButton({
+            requireFollow: automation.requireFollow,
+            username: automation.instagramAccount.username,
+          }),
         });
       } else if (sendFollowPrompt) {
         const promptText = renderMessageWithoutLink({
@@ -695,6 +723,10 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           buttonTitle: automation.followPromptButtonLabel || "i'm following",
           payload: `followcheck:${automation.id}`,
           postId: mediaId,
+          profileButton: getFollowProfileButton({
+            requireFollow: automation.requireFollow,
+            username: automation.instagramAccount.username,
+          }),
         });
       } else if (automation.trackedLinks.length > 0) {
         // Try button template first; if Meta rejects it, fall back to inline links.
@@ -1068,6 +1100,10 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
               buttonTitle:
                 automation.followPromptButtonLabel || "i'm following",
               payload: `followcheck:${automation.id}`,
+              profileButton: getFollowProfileButton({
+                requireFollow: automation.requireFollow,
+                username: automation.instagramAccount.username,
+              }),
             }),
         });
       } catch (error) {
@@ -1553,6 +1589,10 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           text: promptText,
           buttonTitle: automation.followPromptButtonLabel || "I'm following ✅",
           payload: `followcheck:${automation.id}`,
+          profileButton: getFollowProfileButton({
+            requireFollow: automation.requireFollow,
+            username: automation.instagramAccount.username,
+          }),
         });
       } else {
         await sendRevealDirectMessage({

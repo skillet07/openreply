@@ -186,7 +186,8 @@ export async function sendPrivateReplyWithButton(
   commentId: string,
   text: string,
   buttonTitle: string,
-  payload: string
+  payload: string,
+  profileButton?: LinkButton
 ): Promise<{ recipient_id: string; message_id: string }> {
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
@@ -206,6 +207,7 @@ export async function sendPrivateReplyWithButton(
               // Button template text is capped at 640 chars by Meta.
               text: text.slice(0, 640),
               buttons: [
+                ...(profileButton ? [toWebUrlButton(profileButton)] : []),
                 { type: "postback", title: buttonTitle.slice(0, 20), payload },
               ],
             },
@@ -229,7 +231,8 @@ export async function sendDirectMessageWithButton(
   userId: string,
   text: string,
   buttonTitle: string,
-  payload: string
+  payload: string,
+  profileButton?: LinkButton
 ): Promise<{ recipient_id: string; message_id: string }> {
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
@@ -248,6 +251,7 @@ export async function sendDirectMessageWithButton(
               template_type: "button",
               text: text.slice(0, 640),
               buttons: [
+                ...(profileButton ? [toWebUrlButton(profileButton)] : []),
                 { type: "postback", title: buttonTitle.slice(0, 20), payload },
               ],
             },
@@ -298,10 +302,12 @@ export interface LinkButton {
   url: string;
 }
 
+function toWebUrlButton(button: LinkButton) {
+  return { type: "web_url", url: button.url, title: button.title.slice(0, 20) };
+}
+
 function toWebUrlButtons(buttons: LinkButton[]) {
-  return buttons
-    .slice(0, 3)
-    .map((b) => ({ type: "web_url", url: b.url, title: b.title.slice(0, 20) }));
+  return buttons.slice(0, 3).map(toWebUrlButton);
 }
 
 /**

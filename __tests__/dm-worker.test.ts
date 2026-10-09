@@ -1597,6 +1597,262 @@ describe("DM Worker — follow-gate re-check", () => {
   });
 });
 
+describe("DM Worker — follow profile button", () => {
+  const profileUrl = "https://www.instagram.com/neuroblagov/";
+  const gatedAutomation = {
+    ...mockAutomation,
+    requireFollow: true,
+    followPromptMessage: "Follow me first {username}, then tap 👇",
+    followPromptButtonLabel: "I'm following ✅",
+    instagramAccount: {
+      ...mockAutomation.instagramAccount,
+      username: "neuroblagov",
+    },
+    trackedLinks: [
+      {
+        slug: "abc123",
+        label: "Primary campaign link",
+        destinationUrl: "https://example.com",
+      },
+    ],
+  };
+
+  function createMessageJob() {
+    return {
+      name: "process-message",
+      data: {
+        instagramAccountId: "ig_456",
+        messageId: "mid_abc",
+        messageText: "can I get the LINK?",
+        senderId: "commenter_999",
+      },
+      id: "message_job_001",
+      attemptsMade: 0,
+    };
+  }
+
+  function zernioGatedAutomation() {
+    return {
+      ...gatedAutomation,
+      instagramAccount: {
+        ...gatedAutomation.instagramAccount,
+        provider: "ZERNIO",
+        workspaceId: "workspace_123",
+        zernioAccountId: "zernio_selected",
+        accessToken: "",
+      },
+    };
+  }
+
+  afterEach(() => {
+    delete process.env.FOLLOW_PROFILE_BUTTON_LABEL;
+  });
+
+  it("adds the profile link first to the follow prompt (Meta)", async () => {
+    process.env.FOLLOW_PROFILE_BUTTON_LABEL = "Подписаться";
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    mockPrisma.automation.findMany.mockResolvedValue([gatedAutomation]);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReplyWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "Follow me first commenter_user, then tap 👇",
+      "I'm following ✅",
+      "followcheck:auto_789",
+      { title: "Подписаться", url: profileUrl }
+    );
+  });
+
+  it("adds the profile link first to the opening DM (Meta)", async () => {
+    process.env.FOLLOW_PROFILE_BUTTON_LABEL = "Подписаться";
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...gatedAutomation,
+        openingDmEnabled: true,
+        openingDmMessage: "Hey {username}, welcome!",
+        openingDmButtonLabel: "Get the link",
+      },
+    ]);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReplyWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "Hey commenter_user, welcome!",
+      "Get the link",
+      "followcheck:auto_789:open",
+      { title: "Подписаться", url: profileUrl }
+    );
+  });
+
+  it("adds the profile link first to the follow prompt re-sent after a tap (Meta)", async () => {
+    process.env.FOLLOW_PROFILE_BUTTON_LABEL = "Подписаться";
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    mockPrisma.automation.findFirst.mockResolvedValue(gatedAutomation);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:open",
+      })
+    );
+
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Follow me first commenter_user, then tap 👇",
+      "I'm following ✅",
+      "followcheck:auto_789",
+      { title: "Подписаться", url: profileUrl }
+    );
+  });
+
+  it("adds the profile link first to the follow prompt for a DM trigger (Meta)", async () => {
+    process.env.FOLLOW_PROFILE_BUTTON_LABEL = "Подписаться";
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    mockPrisma.automation.findMany.mockResolvedValue([
+      { ...gatedAutomation, dmTriggerEnabled: true },
+    ]);
+
+    await getProcessor()(createMessageJob());
+
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Follow me first commenter_user, then tap 👇",
+      "I'm following ✅",
+      "followcheck:auto_789",
+      { title: "Подписаться", url: profileUrl }
+    );
+  });
+
+  it("keeps a single postback button in the follow prompt when no label is set (Meta)", async () => {
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    mockPrisma.automation.findMany.mockResolvedValue([gatedAutomation]);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReplyWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "Follow me first commenter_user, then tap 👇",
+      "I'm following ✅",
+      "followcheck:auto_789"
+    );
+  });
+
+  it("adds the profile link first to the follow prompt (Zernio)", async () => {
+    process.env.FOLLOW_PROFILE_BUTTON_LABEL = "Подписаться";
+    mockPrisma.zernioConnection.findUnique.mockResolvedValue({
+      apiKey: "encrypted_key",
+    });
+    mockPrisma.automation.findMany.mockResolvedValue([
+      zernioGatedAutomation(),
+    ]);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ isFollower: false }))
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ messageId: "sent" }))
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await getProcessor()(createMockJob());
+
+      const body = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(body.buttons).toEqual([
+        { type: "url", title: "Подписаться", url: profileUrl },
+        {
+          type: "postback",
+          title: "I'm following ✅",
+          payload: "followcheck:auto_789",
+        },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("adds the profile link first to the opening DM (Zernio)", async () => {
+    process.env.FOLLOW_PROFILE_BUTTON_LABEL = "Подписаться";
+    mockPrisma.zernioConnection.findUnique.mockResolvedValue({
+      apiKey: "encrypted_key",
+    });
+    mockPrisma.automation.findMany.mockResolvedValue([
+      {
+        ...zernioGatedAutomation(),
+        openingDmEnabled: true,
+        openingDmMessage: "Hey {username}, welcome!",
+        openingDmButtonLabel: "Get the link",
+      },
+    ]);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ messageId: "sent" }))
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await getProcessor()(createMockJob());
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.buttons).toEqual([
+        { type: "url", title: "Подписаться", url: profileUrl },
+        {
+          type: "postback",
+          title: "Get the link",
+          payload: "followcheck:auto_789:open",
+        },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps a single postback button in the follow prompt when no label is set (Zernio)", async () => {
+    mockPrisma.zernioConnection.findUnique.mockResolvedValue({
+      apiKey: "encrypted_key",
+    });
+    mockPrisma.automation.findMany.mockResolvedValue([
+      zernioGatedAutomation(),
+    ]);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ isFollower: false }))
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ messageId: "sent" }))
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await getProcessor()(createMockJob());
+
+      const body = JSON.parse(fetchMock.mock.calls[1][1].body);
+      expect(body.buttons).toEqual([
+        {
+          type: "postback",
+          title: "I'm following ✅",
+          payload: "followcheck:auto_789",
+        },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("DM Worker — follow re-check acknowledgement", () => {
   const gated = { ...mockAutomation, requireFollow: true, trackedLinks: [] };
   const tap = {

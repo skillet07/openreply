@@ -67,10 +67,32 @@ async function sendZernioMessage({
   };
 }
 
+function linkButton({ title, url }: meta.LinkButton): Button {
+  return { type: "url", title: title.slice(0, 20), url };
+}
+
 function linkButtons(buttons: meta.LinkButton[]): Button[] {
-  return buttons
-    .slice(0, 3)
-    .map(({ title, url }) => ({ type: "url", title: title.slice(0, 20), url }));
+  return buttons.slice(0, 3).map(linkButton);
+}
+
+/**
+ * A postback button, optionally preceded by a web_url button (the profile
+ * link shown first while the follow gate is on). Instagram caps button titles
+ * at 20 chars and a template at 3 buttons, so the pair always fits.
+ */
+function postbackButtons({
+  buttonTitle,
+  payload,
+  profileButton,
+}: {
+  buttonTitle: string;
+  payload: string;
+  profileButton?: meta.LinkButton;
+}): Button[] {
+  return [
+    ...(profileButton ? [linkButton(profileButton)] : []),
+    { type: "postback", title: buttonTitle.slice(0, 20), payload },
+  ];
 }
 
 export async function sendPrivateReply({
@@ -104,6 +126,7 @@ export async function sendPrivateReplyWithButton({
   buttonTitle,
   payload,
   postId,
+  profileButton,
 }: {
   context: InstagramContext;
   instagramAccountId: string;
@@ -112,22 +135,33 @@ export async function sendPrivateReplyWithButton({
   buttonTitle: string;
   payload: string;
   postId?: string;
+  profileButton?: meta.LinkButton;
 }) {
   if (context.provider === "META")
-    return meta.sendPrivateReplyWithButton(
-      context.accessToken,
-      instagramAccountId,
-      commentId,
-      text,
-      buttonTitle,
-      payload
-    );
+    return profileButton
+      ? meta.sendPrivateReplyWithButton(
+          context.accessToken,
+          instagramAccountId,
+          commentId,
+          text,
+          buttonTitle,
+          payload,
+          profileButton
+        )
+      : meta.sendPrivateReplyWithButton(
+          context.accessToken,
+          instagramAccountId,
+          commentId,
+          text,
+          buttonTitle,
+          payload
+        );
   return sendZernioMessage({
     context,
     commentId,
     postId,
     text: text,
-    buttons: [{ type: "postback", title: buttonTitle.slice(0, 20), payload }],
+    buttons: postbackButtons({ buttonTitle, payload, profileButton }),
   });
 }
 
@@ -138,6 +172,7 @@ export async function sendDirectMessageWithButton({
   text,
   buttonTitle,
   payload,
+  profileButton,
 }: {
   context: InstagramContext;
   instagramAccountId: string;
@@ -145,21 +180,32 @@ export async function sendDirectMessageWithButton({
   text: string;
   buttonTitle: string;
   payload: string;
+  profileButton?: meta.LinkButton;
 }) {
   if (context.provider === "META")
-    return meta.sendDirectMessageWithButton(
-      context.accessToken,
-      instagramAccountId,
-      userId,
-      text,
-      buttonTitle,
-      payload
-    );
+    return profileButton
+      ? meta.sendDirectMessageWithButton(
+          context.accessToken,
+          instagramAccountId,
+          userId,
+          text,
+          buttonTitle,
+          payload,
+          profileButton
+        )
+      : meta.sendDirectMessageWithButton(
+          context.accessToken,
+          instagramAccountId,
+          userId,
+          text,
+          buttonTitle,
+          payload
+        );
   return sendZernioMessage({
     context,
     recipientId: userId,
     text: text,
-    buttons: [{ type: "postback", title: buttonTitle.slice(0, 20), payload }],
+    buttons: postbackButtons({ buttonTitle, payload, profileButton }),
   });
 }
 
