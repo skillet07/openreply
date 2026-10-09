@@ -381,6 +381,17 @@ describe("DM Worker — Full Pipeline", () => {
     });
   });
 
+  it("should skip the connected account's own comment matched by username (Zernio ids differ)", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([
+      { ...mockAutomation, instagramAccount: { ...mockAutomation.instagramAccount, username: "Brand.Account" } },
+    ]);
+    const processor = getProcessor();
+    await processor(
+      createMockJob({ ...mockJobData, commenterId: "17841400000000000", commenterName: "brand.account" })
+    );
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+  });
+
   it("should skip when no automations match the media", async () => {
     mockPrisma.automation.findMany.mockResolvedValue([]);
     const processor = getProcessor();

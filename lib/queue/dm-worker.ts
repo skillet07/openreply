@@ -345,6 +345,18 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
   });
 
   for (const automation of automations) {
+    // The webhook drops the account's own comments by id, but through Zernio
+    // the account id and the comment author id come in different formats, so
+    // the brand's own comments and public replies slipped through and fired
+    // campaigns on themselves. Match the username as well.
+    const ownUsername = automation.instagramAccount.username?.toLowerCase();
+    if (
+      commenterId === instagramAccountId ||
+      (ownUsername && commenterName?.toLowerCase() === ownUsername)
+    ) {
+      continue;
+    }
+
     // "Any word" campaigns fire on every comment; otherwise require a keyword hit.
     const matchResult = automation.matchAnyWord
       ? { matched: true, matchedKeyword: null }
