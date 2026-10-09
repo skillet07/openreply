@@ -32,6 +32,9 @@ const {
       updateMany: vi.fn(),
       create: vi.fn(),
     },
+    linkClick: {
+      findMany: vi.fn(),
+    },
     instagramAccount: {
       findUnique: vi.fn(),
     },
@@ -240,6 +243,7 @@ beforeEach(() => {
   mockPrisma.dmLog.upsert.mockResolvedValue({});
   mockPrisma.dmLog.update.mockReset().mockResolvedValue({});
   mockPrisma.dmLog.updateMany.mockReset().mockResolvedValue({ count: 1 });
+  mockPrisma.linkClick.findMany.mockReset().mockResolvedValue([]);
   mockPrisma.instagramAccount.findUnique.mockResolvedValue({
     workspaceId: "workspace_123",
   });
@@ -1763,4 +1767,206 @@ it("retains the public reply claim if sending succeeded but its log write failed
   await process({ ...createMockJob(), id: "next-poll" });
   expect(sendCommentReply).toHaveBeenCalledTimes(1);
   expect(mockSendPrivateReply).toHaveBeenCalledTimes(1);
+});
+
+describe("DM Worker — process-followup", () => {
+  const followUpAutomation = {
+    ...mockAutomation,
+    followUpEnabled: true,
+    followUpMessage: "Hey {username}! You have not opened the bot yet: {link}",
+    linkButtonLabel: "Open the bot",
+    trackedLinks: [
+      {
+        slug: "abc123",
+        label: "Open the bot",
+        destinationUrl: "https://t.me/neuroblagov_bot?start=razbor_instagram",
+      },
+    ],
+  };
+
+  const followUpData = {
+    instagramAccountId: "ig_456",
+    accountConnectionId: "ig_account_row_1",
+    userId: "commenter_999",
+    automationId: "auto_789",
+    commenterName: "commenter_user",
+  };
+
+  function createMockFollowUpJob(data: Record<string, unknown> = followUpData) {
+    return {
+      name: "process-followup",
+      data,
+      id: "followup_auto_789_commenter_999",
+      attemptsMade: 0,
+    };
+  }
+
+  beforeEach(() => {
+    mockPrisma.automation.findFirst.mockResolvedValue(followUpAutomation);
+    mockPrisma.linkClick.findMany.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("sends the follow-up with the campaign's link button when nothing was clicked", async () => {
+    vi.stubEnv("FOLLOWUP_SKIP_IF_CLICKED", "true");
+
+    await getProcessor()(createMockFollowUpJob());
+
+    const token = hashRecipientId("commenter_999");
+    expect(mockPrisma.linkClick.findMany).toHaveBeenCalledWith({
+      where: {
+        automationId: "auto_789",
+        recipientHash: token,
+      },
+      select: { userAgent: true },
+      take: 20,
+    });
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Hey commenter_user! You have not opened the bot yet:",
+      [
+        {
+          title: "Open the bot",
+          url: `http://localhost:3000/r/abc123?r=${token}`,
+        },
+      ]
+    );
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          automationId_commentId: {
+            automationId: "auto_789",
+            commentId: "followup:commenter_999",
+          },
+        },
+        create: expect.objectContaining({
+          commentText: "(follow-up)",
+          commenterId: "commenter_999",
+          status: "SENT",
+          dmSentAt: expect.any(Date),
+        }),
+        update: expect.objectContaining({
+          status: "SENT",
+          dmSentAt: expect.any(Date),
+          errorMessage: null,
+        }),
+      })
+    );
+  });
+
+  it("skips the follow-up and logs nothing when the recipient clicked the link", async () => {
+    vi.stubEnv("FOLLOWUP_SKIP_IF_CLICKED", "true");
+    mockPrisma.linkClick.findMany.mockResolvedValue([
+      {
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Instagram 300.0",
+      },
+    ]);
+
+    await getProcessor()(createMockFollowUpJob());
+
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a Meta link preview as a person's click", async () => {
+    vi.stubEnv("FOLLOWUP_SKIP_IF_CLICKED", "true");
+    mockPrisma.linkClick.findMany.mockResolvedValue([
+      { userAgent: "facebookexternalhit/1.1" },
+    ]);
+
+    await getProcessor()(createMockFollowUpJob());
+
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Hey commenter_user! You have not opened the bot yet:",
+      [
+        {
+          title: "Open the bot",
+          url: `http://localhost:3000/r/abc123?r=${hashRecipientId("commenter_999")}`,
+        },
+      ]
+    );
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ status: "SENT" }),
+      })
+    );
+  });
+
+  it("keeps the text-only follow-up of the upstream when the skip flag is off", async () => {
+    mockPrisma.linkClick.findMany.mockResolvedValue([
+      { userAgent: "Mozilla/5.0 Instagram 300.0" },
+    ]);
+
+    await getProcessor()(createMockFollowUpJob());
+
+    // Without the flag the upstream behaviour is intact: a plain DM, and the
+    // click history is never even queried.
+    expect(mockPrisma.linkClick.findMany).not.toHaveBeenCalled();
+    expect(mockSendDirectMessage).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Hey commenter_user! You have not opened the bot yet:"
+    );
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ status: "SENT" }),
+      })
+    );
+  });
+
+  it("logs a FAILED follow-up without throwing when Meta rejects the send", async () => {
+    vi.stubEnv("FOLLOWUP_SKIP_IF_CLICKED", "true");
+    mockSendDirectMessageWithLinkButton.mockRejectedValue(
+      new MetaApiError(
+        10,
+        undefined,
+        undefined,
+        "This message is sent outside of allowed window."
+      )
+    );
+
+    await expect(
+      getProcessor()(createMockFollowUpJob())
+    ).resolves.toBeUndefined();
+
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          status: "FAILED",
+          errorMessage: expect.stringContaining("outside of allowed window"),
+        }),
+        update: expect.objectContaining({
+          status: "FAILED",
+          errorMessage: expect.stringContaining("outside of allowed window"),
+        }),
+      })
+    );
+  });
+
+  it("does nothing when the campaign is inactive or follow-up is off", async () => {
+    vi.stubEnv("FOLLOWUP_SKIP_IF_CLICKED", "true");
+    mockPrisma.automation.findFirst.mockResolvedValue({
+      ...followUpAutomation,
+      followUpEnabled: false,
+    });
+
+    await getProcessor()(createMockFollowUpJob());
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
+  });
 });

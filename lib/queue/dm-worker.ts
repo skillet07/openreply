@@ -1227,7 +1227,13 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
 
   const automation = await prisma.automation.findFirst({
     where: { id: automationId, isActive: true, ...connectionScope(job.data) },
-    include: { instagramAccount: true },
+    include: {
+      instagramAccount: true,
+      trackedLinks: {
+        select: { slug: true, label: true, destinationUrl: true },
+        orderBy: TRACKED_LINK_ORDER,
+      },
+    },
   });
 
   if (
@@ -1240,6 +1246,31 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
     return;
   }
 
+  // With the flag on, a follow-up is only sent to people who did not open the
+  // link. Read it per call, not at import time, so a deploy can flip it.
+  const skipIfClicked = process.env.FOLLOWUP_SKIP_IF_CLICKED === "true";
+  if (skipIfClicked) {
+    const clicks = await prisma.linkClick.findMany({
+      where: {
+        automationId: automation.id,
+        recipientHash: hashRecipientId(userId),
+      },
+      select: { userAgent: true },
+      take: 20,
+    });
+    // Meta's link preview fetchers click too. Those rows are not a person.
+    const clicked = clicks.some(
+      (click) =>
+        !/facebookexternalhit|facebot|meta-externalagent|meta-externalfetcher/i.test(
+          click.userAgent ?? ""
+        )
+    );
+    if (clicked) {
+      console.log("[DM Worker] Follow-up skipped: link already clicked");
+      return;
+    }
+  }
+
   let accessToken: InstagramContext;
   try {
     accessToken = await createInstagramContext(
@@ -1250,21 +1281,71 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
     return;
   }
 
+  const followUpMessage = automation.followUpMessage;
+  const commentId = `followup:${userId}`;
   try {
-    await sendDirectMessage({
-      context: accessToken,
-      instagramAccountId: automation.instagramAccount.instagramId,
-      userId: userId,
-      message: renderMessageWithoutLink({
-        message: automation.followUpMessage,
+    if (skipIfClicked && automation.trackedLinks.length > 0) {
+      // Same reveal path as the button tap, so the follow-up carries the same
+      // tracked link buttons instead of a bare text URL.
+      await sendRevealDirectMessage({
+        accessToken,
+        automation: { ...automation, dmMessage: followUpMessage },
+        userId: userId,
         commenterName: commenterName ?? null,
-      }),
+        context: "follow-up",
+      });
+    } else {
+      await sendDirectMessage({
+        context: accessToken,
+        instagramAccountId: automation.instagramAccount.instagramId,
+        userId: userId,
+        message: renderMessageWithoutLink({
+          message: followUpMessage,
+          commenterName: commenterName ?? null,
+        }),
+      });
+    }
+    await prisma.dmLog.upsert({
+      where: { automationId_commentId: { automationId: automation.id, commentId } },
+      create: {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: userId,
+        commenterName: commenterName ?? null,
+        commentText: "(follow-up)",
+        commentId,
+        status: "SENT",
+        dmSentAt: new Date(),
+      },
+      update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
     });
   } catch (error) {
+    // Best-effort like the rest of the follow-up: log the outcome, never retry.
     console.log(
       "[DM Worker] Failed to send follow-up message:",
       formatError(error)
     );
+    await prisma.dmLog.upsert({
+      where: { automationId_commentId: { automationId: automation.id, commentId } },
+      create: {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: userId,
+        commenterName: commenterName ?? null,
+        commentText: "(follow-up)",
+        commentId,
+        status: "FAILED",
+        errorMessage: formatError(classifySendError(error)),
+        dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
+      },
+      update: {
+        status: "FAILED",
+        errorMessage: formatError(classifySendError(error)),
+        dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
+      },
+    });
   }
 }
 
