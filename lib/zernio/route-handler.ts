@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Prisma } from '@/app/generated/prisma/client';
 import { MetaApiError } from '@/lib/meta/client';
 import { canManageWorkspace, getCurrentWorkspaceContext, type WorkspaceContext } from '@/lib/workspace-access';
+import { isAllowedRequestOrigin } from '@/lib/request-origin';
 
 export class ConnectionError extends Error {
   constructor(message: string, public status = 400) { super(message); }
@@ -15,8 +16,7 @@ export function withZernioManagement(handler: (context: WorkspaceContext, reques
       if (!context) throw new ConnectionError('Sign in to manage your connection.', 401);
       if (!canManageWorkspace(context.role)) throw new ConnectionError('Only workspace owners and admins can manage the Zernio connection.', 403);
       if (request.method !== 'GET') {
-        const origin = request.headers.get('origin');
-        if (origin && origin !== new URL(request.url).origin) throw new ConnectionError('Invalid request origin.', 403);
+        if (!isAllowedRequestOrigin(request)) throw new ConnectionError('Invalid request origin.', 403);
       }
       return await handler(context, request);
     } catch (error) {

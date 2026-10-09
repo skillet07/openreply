@@ -8,6 +8,12 @@ function facebookGraphBase() {
   return `https://graph.facebook.com/${getMetaGraphApiVersion()}`;
 }
 
+// Meta serves the Instagram long-lived token endpoints without a version
+// prefix. Requesting them under the versioned base answers with
+// `Unsupported request - method type: get`, so these two calls must stay on
+// the bare origin.
+const INSTAGRAM_TOKEN_BASE = "https://graph.instagram.com";
+
 export class MetaApiError extends Error {
   constructor(
     public code: number,
@@ -782,7 +788,7 @@ export async function getFollowerCountSeries(
 export async function getLongLivedToken(
   shortLivedToken: string
 ): Promise<{ accessToken: string; expiresIn: number }> {
-  const url = new URL(`${instagramGraphBase()}/access_token`);
+  const url = new URL(`${INSTAGRAM_TOKEN_BASE}/access_token`);
   url.searchParams.set("grant_type", "ig_exchange_token");
   url.searchParams.set("client_secret", requireEnv("INSTAGRAM_APP_SECRET"));
   url.searchParams.set("access_token", shortLivedToken);
@@ -799,7 +805,7 @@ export async function getLongLivedToken(
 export async function refreshLongLivedToken(
   longLivedToken: string
 ): Promise<{ accessToken: string; expiresIn: number }> {
-  const url = new URL(`${instagramGraphBase()}/refresh_access_token`);
+  const url = new URL(`${INSTAGRAM_TOKEN_BASE}/refresh_access_token`);
   url.searchParams.set("grant_type", "ig_refresh_token");
   url.searchParams.set("access_token", longLivedToken);
 
