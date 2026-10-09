@@ -1283,6 +1283,12 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
 
   const followUpMessage = automation.followUpMessage;
   const commentId = `followup:${userId}`;
+
+  // The send is best-effort: log the outcome, never retry the job. The outcome
+  // is recorded after this block so a failing DmLog write cannot turn a
+  // delivered follow-up into a FAILED one.
+  let sendError: unknown;
+  let sent = false;
   try {
     if (skipIfClicked && automation.trackedLinks.length > 0) {
       // Same reveal path as the button tap, so the follow-up carries the same
@@ -1305,47 +1311,62 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
         }),
       });
     }
-    await prisma.dmLog.upsert({
-      where: { automationId_commentId: { automationId: automation.id, commentId } },
-      create: {
-        workspaceId: automation.workspaceId,
-        automationId: automation.id,
-        instagramAccountId: automation.instagramAccountId,
-        commenterId: userId,
-        commenterName: commenterName ?? null,
-        commentText: "(follow-up)",
-        commentId,
-        status: "SENT",
-        dmSentAt: new Date(),
-      },
-      update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
-    });
+    sent = true;
   } catch (error) {
-    // Best-effort like the rest of the follow-up: log the outcome, never retry.
+    sendError = error;
     console.log(
       "[DM Worker] Failed to send follow-up message:",
       formatError(error)
     );
-    await prisma.dmLog.upsert({
-      where: { automationId_commentId: { automationId: automation.id, commentId } },
-      create: {
-        workspaceId: automation.workspaceId,
-        automationId: automation.id,
-        instagramAccountId: automation.instagramAccountId,
-        commenterId: userId,
-        commenterName: commenterName ?? null,
-        commentText: "(follow-up)",
-        commentId,
-        status: "FAILED",
-        errorMessage: formatError(classifySendError(error)),
-        dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
-      },
-      update: {
-        status: "FAILED",
-        errorMessage: formatError(classifySendError(error)),
-        dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
-      },
-    });
+  }
+
+  // The DmLog write is best-effort too: a database hiccup must not fail the
+  // job, because BullMQ would retry it and the person would get the follow-up
+  // again after Meta already accepted it.
+  try {
+    if (sent) {
+      await prisma.dmLog.upsert({
+        where: { automationId_commentId: { automationId: automation.id, commentId } },
+        create: {
+          workspaceId: automation.workspaceId,
+          automationId: automation.id,
+          instagramAccountId: automation.instagramAccountId,
+          commenterId: userId,
+          commenterName: commenterName ?? null,
+          commentText: "(follow-up)",
+          commentId,
+          status: "SENT",
+          dmSentAt: new Date(),
+        },
+        update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
+      });
+    } else {
+      await prisma.dmLog.upsert({
+        where: { automationId_commentId: { automationId: automation.id, commentId } },
+        create: {
+          workspaceId: automation.workspaceId,
+          automationId: automation.id,
+          instagramAccountId: automation.instagramAccountId,
+          commenterId: userId,
+          commenterName: commenterName ?? null,
+          commentText: "(follow-up)",
+          commentId,
+          status: "FAILED",
+          errorMessage: formatError(classifySendError(sendError)),
+          dmDeliveryUnconfirmed: isDeliveryUnconfirmed(sendError),
+        },
+        update: {
+          status: "FAILED",
+          errorMessage: formatError(classifySendError(sendError)),
+          dmDeliveryUnconfirmed: isDeliveryUnconfirmed(sendError),
+        },
+      });
+    }
+  } catch (error) {
+    console.log(
+      "[DM Worker] Failed to record follow-up outcome:",
+      formatError(error)
+    );
   }
 }
 

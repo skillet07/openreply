@@ -1956,6 +1956,54 @@ describe("DM Worker — process-followup", () => {
     );
   });
 
+  it("does not fail the job when the follow-up was sent but the log write blew up", async () => {
+    vi.stubEnv("FOLLOWUP_SKIP_IF_CLICKED", "true");
+    mockPrisma.dmLog.upsert.mockRejectedValueOnce(
+      new Error("Lost database connection after follow-up")
+    );
+
+    await expect(
+      getProcessor()(createMockFollowUpJob())
+    ).resolves.toBeUndefined();
+
+    // The message went out, so the failure of the SENT write must not fail the
+    // job and must not retry the send.
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ status: "SENT" }),
+      })
+    );
+  });
+
+  it("does not fail the job when the send and the FAILED log both blow up", async () => {
+    vi.stubEnv("FOLLOWUP_SKIP_IF_CLICKED", "true");
+    mockSendDirectMessageWithLinkButton.mockRejectedValue(
+      new MetaApiError(
+        10,
+        undefined,
+        undefined,
+        "This message is sent outside of allowed window."
+      )
+    );
+    mockPrisma.dmLog.upsert.mockRejectedValueOnce(
+      new Error("Lost database connection")
+    );
+
+    await expect(
+      getProcessor()(createMockFollowUpJob())
+    ).resolves.toBeUndefined();
+
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ status: "FAILED" }),
+      })
+    );
+  });
+
   it("does nothing when the campaign is inactive or follow-up is off", async () => {
     vi.stubEnv("FOLLOWUP_SKIP_IF_CLICKED", "true");
     mockPrisma.automation.findFirst.mockResolvedValue({
