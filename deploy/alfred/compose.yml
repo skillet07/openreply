@@ -1,0 +1,92 @@
+# OpenReply on Alfred (moved from Railway project nb-openreply).
+# Start only through ./up.sh: it injects secrets from nbsecret.
+# All services use network_mode: host: on Alfred the default Docker bridge has
+# no outbound internet (checked 2026-11-10), so every port is bound to 127.0.0.1.
+name: openreply
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://postgres:${OPENREPLY_PG_PASSWORD:?}@127.0.0.1:55433/openreply
+  STATS_DATABASE_URL: postgresql://nb_stats_ro:${OPENREPLY_STATS_DB_PASSWORD:?}@127.0.0.1:55433/openreply
+  REDIS_URL: redis://:${OPENREPLY_PG_PASSWORD:?}@127.0.0.1:56380
+  NEXTAUTH_URL: ${NEXTAUTH_URL:?}
+  NEXTAUTH_SECRET: ${OPENREPLY_NEXTAUTH_SECRET:?}
+  CRON_SECRET: ${OPENREPLY_CRON_SECRET:?}
+  ENCRYPTION_KEY: ${OPENREPLY_ENCRYPTION_KEY:?}
+  FACEBOOK_APP_SECRET: ${OPENREPLY_FACEBOOK_APP_SECRET:?}
+  INSTAGRAM_APP_ID: ${OPENREPLY_INSTAGRAM_APP_ID:?}
+  INSTAGRAM_APP_SECRET: ${OPENREPLY_INSTAGRAM_APP_SECRET:?}
+  WEBHOOK_VERIFY_TOKEN: ${OPENREPLY_WEBHOOK_VERIFY_TOKEN:?}
+  ALLOWED_EMAILS: ${ALLOWED_EMAILS:?}
+  META_GRAPH_API_VERSION: v25.0
+
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    network_mode: host
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1", "-c", "port=55433"]
+    environment:
+      POSTGRES_DB: openreply
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${OPENREPLY_PG_PASSWORD:?}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 55433 -U postgres -d openreply"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    network_mode: host
+    command: ["sh", "-c", "exec redis-server --bind 127.0.0.1 --port 56380 --requirepass \"$$REDIS_PASSWORD\" --save 60 1"]
+    environment:
+      REDIS_PASSWORD: ${OPENREPLY_PG_PASSWORD:?}
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p 56380 -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    image: openreply:nb
+    restart: unless-stopped
+    network_mode: host
+    command: ["sh", "-c", "npx prisma migrate deploy && exec npx next start -H 127.0.0.1 -p 3310"]
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    image: openreply:nb
+    restart: unless-stopped
+    network_mode: host
+    command: ["npm", "run", "worker"]
+    environment:
+      <<: *app-env
+      FOLLOWUP_SKIP_IF_CLICKED: "true"
+      FOLLOW_PROFILE_BUTTON_LABEL: "Подписаться"
+      FOLLOW_RECHECK_ACK_MESSAGE: ${FOLLOW_RECHECK_ACK_MESSAGE:-}
+      FOLLOW_RECHECK_DELAYS_MS: "20000,40000,40000"
+    depends_on:
+      web: { condition: service_started }
+
+  cron:
+    image: openreply:nb
+    restart: unless-stopped
+    network_mode: host
+    command: ["sh", "scripts/cron.sh"]
+    environment:
+      CRON_BASE_URL: http://127.0.0.1:3310
+      CRON_SECRET: ${OPENREPLY_CRON_SECRET:?}
+    depends_on:
+      web: { condition: service_started }
+
+volumes:
+  pgdata:
+  redisdata:
