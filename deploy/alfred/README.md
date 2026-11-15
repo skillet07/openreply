@@ -19,5 +19,5 @@ Commands (from this folder):
 After changing the public URL: update NEXTAUTH_URL in site.env, `./up.sh`, then copy
 `tools/zernio-repoint.ts` into the web container and run `npx tsx zernio-repoint.ts`.
 
-Rollback to Railway: restart web+worker deployments in Railway, run zernio-repoint with the Railway URL,
-restore funnel: `tailscale funnel --bg --https=443 http://127.0.0.1:18789` (old config in backup/).
+Railway project `nb-openreply` was deleted on 2026-11-15. The last Railway data is in
+`backup/railway-final-20261110-2056.dump` (not in git); restore it with `restore.sh`.
