@@ -47,7 +47,8 @@ The files must sit under `/app` (not `/tmp`): `@/…` and `zod` imports resolve 
 Remove `/app/tmp-tools` afterwards.
 
 Check without a public comment (`tools/zernio-signed-probe.ts`): sends a signed synthetic `comment.received` (text with no
-code word) to the public webhook URL and expects 200, then a wrongly signed one and expects 401; `--match "<text>"` runs the
+code word) to the public webhook URL and expects 200, then a wrongly signed one and expects 401, then waits up to 30 s
+for the worker to finish the queued job (RESULT: FAIL if the job is not `completed`, e.g. the worker is stopped); `--match "<text>"` runs the
 app's keyword matching against the workspace's rules in-process (no queue, no sending).
 
     docker exec openreply-web-1 npx tsx /app/tmp-tools/zernio-signed-probe.ts --workspace <workspaceId>

@@ -148,7 +148,10 @@ async function main() {
     if (!args.dry) {
       const webhookId = await ensureWebhook({ apiKey, workspaceId, secret: decryptToken(connection.webhookSecret), baseUrl, webhookId: connection.webhookId });
       if (webhookId !== connection.webhookId) await prisma.zernioConnection.update({ where: { workspaceId }, data: { webhookId } });
-      const after = (await remoteWebhooks(apiKey)).filter(h => h.url === target);
+      const allAfter = await remoteWebhooks(apiKey);
+      const after = allAfter.filter(h => h.url === target);
+      console.log(`zernio webhooks under this key after ensure: ${allAfter.length}`);
+      if (allAfter.length > 1) console.warn(`WARN: ${allAfter.length} webhooks under this key, expected exactly 1; the others are not ours: ${allAfter.filter(h => h.url !== target).map(h => `${h.id} ${h.url}`).join('; ')}`);
       const good = after.length === 1 && after[0].isActive === true && REQUIRED_EVENTS.every(e => after[0].events.includes(e));
       console.log(`webhook ${webhookId}: urls matching ${after.length}, active ${after[0]?.isActive}, events ${after[0]?.events.join(',')} -> ${good ? 'OK' : 'NOT OK'}`);
       if (!good) throw new Error('Webhook state in Zernio does not match the expected one');
@@ -232,7 +235,7 @@ async function reconcileExisting({ workspaceId, ownerId, apiKey, profileId, acco
     if (!dry) await prisma.zernioConnection.create({ data: { workspaceId, profileId, apiKey: encryptToken(apiKey), webhookSecret: encryptToken(randomBytes(32).toString('hex')) } });
   } else {
     if (connection.profileId !== profileId) console.log(`  connection profile ${connection.profileId} differs from ${profileId} (not changed)`);
-    if (decryptToken(connection.apiKey) !== apiKey) console.log('  stored Zernio key differs from the key in the environment (not changed)');
+    if (decryptToken(connection.apiKey) !== apiKey) throw new Error(`Workspace ${workspaceId} stores another Zernio key than the one in the environment; the worker would use the stored one. Resolve by hand`);
   }
   const stored = await prisma.instagramAccount.findUnique({ where: { instagramId: account.instagramId } });
   if (!stored) {

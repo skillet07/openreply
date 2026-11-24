@@ -14,11 +14,14 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { prisma } from '@/lib/db/client';
 import { getBaseUrl } from '@/lib/env';
 import { decryptToken } from '@/lib/meta/oauth';
+import { getDMQueue, getRedisConnection } from '@/lib/queue/client';
 import { webhookUrl } from '@/lib/zernio/manage-remote';
+import { probeVerdict } from './probe-verdict';
 import { matchRules, type MatchableRule } from './rule-match';
 
 const PROBE_MEDIA_ID = 'openreply-probe-media';
 const DEFAULT_TEXT = 'openreply probe: no code word in this text';
+const JOB_WAIT_MS = 30_000;
 
 function arg(name: string): string | undefined {
   const argv = process.argv.slice(2);
@@ -56,6 +59,18 @@ async function post(url: string, body: string, signature: string) {
   return { status: response.status, body: (await response.text()).slice(0, 200) };
 }
 
+async function waitForJob(jobId: string): Promise<string> {
+  const queue = getDMQueue();
+  const deadline = Date.now() + JOB_WAIT_MS;
+  let state = 'missing';
+  for (;;) {
+    const job = await queue.getJob(jobId);
+    state = job ? await job.getState() : 'missing';
+    if (state === 'completed' || state === 'failed' || Date.now() >= deadline) return state;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+}
+
 async function runSignedProbe(workspaceId: string, publicBase: string, text: string) {
   const connection = await prisma.zernioConnection.findUnique({ where: { workspaceId } });
   if (!connection?.webhookId) throw new Error(`Workspace ${workspaceId} has no webhook configured`);
@@ -86,16 +101,20 @@ async function runSignedProbe(workspaceId: string, publicBase: string, text: str
   const denied = await post(url, body, bad);
   console.log(`  signed with a wrong secret       -> HTTP ${denied.status} ${denied.body}  (expected 401)`);
 
-  // The accepted event must be stored for this workspace, and no DM may exist for the synthetic comment.
-  await new Promise(resolve => setTimeout(resolve, 4000));
+  // The accepted event must be stored for this workspace, no DM may exist for the synthetic comment,
+  // and the worker must have finished the queued job (same jobId as lib/queue/process-webhook.ts).
+  // A rejected request queued nothing, so there is nothing to wait for.
+  const jobState = ok.status === 200 ? await waitForJob(`comment_${account.instagramId}_${commentId}`) : 'not queued';
   const events = await prisma.webhookEvent.findMany({ where: { workspaceId }, orderBy: { createdAt: 'desc' }, take: 20 });
   const stored = events.find(e => JSON.stringify(e.payload).includes(commentId));
   const dms = await prisma.dmLog.count({ where: { workspaceId, commentId } });
   console.log(`  stored webhook event: ${stored ? `${stored.id} status ${stored.status}` : 'NOT FOUND'}; DM log rows for the synthetic comment: ${dms}  (expected 0)`);
+  console.log(`  queue job state: ${jobState}  (expected completed, waited up to ${JOB_WAIT_MS / 1000}s)`);
 
-  const pass = ok.status === 200 && denied.status === 401 && Boolean(stored) && dms === 0;
-  console.log(pass ? 'RESULT: PASS' : 'RESULT: FAIL');
-  return pass;
+  const verdict = probeVerdict({ signedStatus: ok.status, wrongSignatureStatus: denied.status, storedEvent: Boolean(stored), dmRows: dms, jobState });
+  for (const failure of verdict.failures) console.log(`  FAILED: ${failure}`);
+  console.log(verdict.pass ? 'RESULT: PASS' : 'RESULT: FAIL');
+  return verdict.pass;
 }
 
 async function main() {
@@ -106,6 +125,10 @@ async function main() {
     ? (await runMatch(workspaceId, matchText)) > 0
     : await runSignedProbe(workspaceId, arg('--public-url') ?? getBaseUrl(), arg('--text') ?? DEFAULT_TEXT);
   await prisma.$disconnect();
+  if (matchText === undefined) {
+    await getDMQueue().close();
+    await getRedisConnection().quit();
+  }
   if (!pass) process.exitCode = 1;
 }
 

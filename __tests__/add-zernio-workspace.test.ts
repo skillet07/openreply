@@ -9,6 +9,7 @@ import {
   type RuleRow,
 } from '../deploy/alfred/tools/automation-copy';
 import { matchRules, type MatchableRule } from '../deploy/alfred/tools/rule-match';
+import { probeVerdict, type ProbeObservation } from '../deploy/alfred/tools/probe-verdict';
 
 const URL_SYS = 'https://t.me/neuroblagov_bot?start=zadacha_instagram_sys';
 
@@ -104,7 +105,8 @@ describe('planRuleCopy', () => {
   function stored(s: RuleRow, patch: Record<string, unknown> = {}) {
     const copy = buildRuleCopy({ sample: s, destinationUrl: URL_SYS, ...slugs() });
     return {
-      ...copy.fields,
+      // What the database returns: equal values, but never the same array objects as the sample's.
+      ...structuredClone(copy.fields),
       id: 'copy-id',
       workspaceId: 'ws-sys',
       instagramAccountId: 'ig-sys',
@@ -187,5 +189,26 @@ describe('matchRules (probe --match)', () => {
     expect(run([rule({ isActive: false })], 'задача')[0]).toMatchObject({ considered: false, matched: false });
     expect(run([rule({ matchAnyPost: false, postId: 'other' })], 'задача')[0]).toMatchObject({ considered: false, matched: false });
     expect(run([rule({ matchAnyPost: false, postId: 'openreply-probe-media' })], 'задача')[0]).toMatchObject({ considered: true, matched: true });
+  });
+});
+
+describe('probeVerdict (probe PASS rule)', () => {
+  const good: ProbeObservation = { signedStatus: 200, wrongSignatureStatus: 401, storedEvent: true, dmRows: 0, jobState: 'completed' };
+
+  it('passes only when the worker completed the job', () => {
+    expect(probeVerdict(good)).toEqual({ pass: true, failures: [] });
+  });
+
+  it.each(['waiting', 'active', 'delayed', 'failed', 'missing', 'not queued'])('fails when the job is %s (worker stopped or broken)', jobState => {
+    const verdict = probeVerdict({ ...good, jobState });
+    expect(verdict.pass).toBe(false);
+    expect(verdict.failures).toEqual([expect.stringContaining(`"${jobState}"`)]);
+  });
+
+  it('fails on wrong HTTP codes, a missing stored event and any DM row', () => {
+    expect(probeVerdict({ ...good, signedStatus: 404 }).pass).toBe(false);
+    expect(probeVerdict({ ...good, wrongSignatureStatus: 200 }).pass).toBe(false);
+    expect(probeVerdict({ ...good, storedEvent: false }).pass).toBe(false);
+    expect(probeVerdict({ ...good, dmRows: 1 }).pass).toBe(false);
   });
 });
